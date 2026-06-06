@@ -44,3 +44,55 @@ const signUp = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+/**
+ * Authenticates an existing user by email and password.
+ * Returns a signed JWT containing the user's id and role on success.
+ *
+ * @route POST /api/auth/signin
+ * @access Public
+ */
+const signIn = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const [users] = await pool.query("SELECT * FROM users WHERE email = ?", [
+      email,
+    ]);
+
+    if (users.length === 0) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    const user = users[0];
+
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    // user.role is extracted explicitly — encoding the full user object was a prior bug
+    const token = jwt.sign(
+      { id: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: "3d" },
+    );
+
+    res.status(200).json({
+      message: "Signin successful",
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+      token,
+    });
+  } catch (error) {
+    console.error("Signin error:", error.message);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+module.exports = { signUp, signIn };
