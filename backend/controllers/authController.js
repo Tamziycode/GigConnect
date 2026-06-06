@@ -95,4 +95,33 @@ const signIn = async (req, res) => {
   }
 };
 
-module.exports = { signUp, signIn };
+/**
+ * Fetches a public user profile by ID.
+ * Excludes sensitive fields such as password_hash from the response.
+ *
+ * @route GET /api/auth/users/:id
+ * @access Private
+ */
+const getUserById = async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const [users] = await pool.query(
+      "SELECT id, role, name, email, title, location, lat, lng, created_at FROM users WHERE id = ?",
+      [userId],
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json({ user: users[0] });
+  } catch (error) {
+    console.error("Error fetching user profile:", error);
+    res
+      .status(500)
+      .json({ message: "Internal server error while fetching profile" });
+  }
+};
+
+module.exports = { signUp, signIn, getUserById };
