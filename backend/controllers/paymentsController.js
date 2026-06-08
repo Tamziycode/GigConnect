@@ -95,4 +95,51 @@ const releasePayment = async (req, res) => {
   }
 };
 
-module.exports = { initializeEscrow, releasePayment };
+const refundPayment = async (req, res) => {
+  try {
+    const jobId = req.params.jobId;
+
+    //  Verify the job is in a refundable state
+    const [jobs] = await pool.query(
+      "SELECT job_status FROM jobs WHERE id = ?",
+      [jobId],
+    );
+
+    if (jobs.length === 0) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    const validRefundStates = ["CANCELLED", "DISPUTED"];
+    if (!validRefundStates.includes(jobs[0].job_status)) {
+      return res.status(400).json({
+        message: "Job must be CANCELLED or DISPUTED to issue a refund.",
+      });
+    }
+
+    // Check if the funds are still in escrow
+    const [payments] = await pool.query(
+      "SELECT id, amount, status FROM payments WHERE job_id = ?",
+      [jobId],
+    );
+
+    if (payments.length === 0 || payments[0].status !== "HELD_IN_ESCROW") {
+      return res.status(400).json({ message: "No funds available to refund." });
+    }
+
+    // Update the payment status to REFUNDED
+    await pool.query(
+      "UPDATE payments SET status = 'REFUNDED' WHERE job_id = ?",
+      [jobId],
+    );
+
+    res.status(200).json({
+      message: "Funds successfully refunded to the client.",
+      amount_refunded: payments[0].amount,
+    });
+  } catch (error) {
+    console.error("Refund Payment Error:", error);
+    res.status(500).json({ message: "Internal server error during refund" });
+  }
+};
+
+module.exports = { initializeEscrow, releasePayment, refundPayment };
