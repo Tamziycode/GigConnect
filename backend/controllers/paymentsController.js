@@ -40,4 +40,59 @@ const initializeEscrow = async (req, res) => {
   }
 };
 
-module.exports = { initializeEscrow };
+const releasePayment = async (req, res) => {
+  try {
+    const jobId = req.params.id;
+    // 1. Verify the job is completed AND both parties checked in
+    const [jobs] = await pool.query(
+      "SELECT job_status, client_checkin, worker_checkin FROM jobs WHERE id = ?",
+      [jobId],
+    );
+
+    if (jobs.length === 0) {
+      return res.status(404).json({ message: "Job not found." });
+    }
+
+    if (jobs[0].job_status !== "COMPLETED") {
+      return res.status(400).json({
+        message: "Cannot release funds. Job must be marked COMPLETED first.",
+      });
+    }
+
+    if (!jobs[0].client_checkin || !jobs[0].worker_checkin) {
+      return res.status(403).json({
+        message:
+          "Cannot release funds. Both client and worker must complete GPS check-in.",
+      });
+    }
+    // Check if the funds are currently in escrow
+    const [payments] = await pool.query(
+      "SELECT id, amount, status FROM payments WHERE job_id = ?",
+      [jobId],
+    );
+
+    if (payments.length === 0 || payments[0].status !== "HELD_IN_ESCROW") {
+      return res
+        .status(400)
+        .json({ message: "No funds held in escrow for this job." });
+    }
+
+    // Update the payment status to RELEASED
+    await pool.query(
+      "UPDATE payments SET status = 'RELEASED' WHERE job_id = ?",
+      [jobId],
+    );
+
+    res.status(200).json({
+      message: "Funds successfully released to the worker.",
+      amount_released: payments[0].amount,
+    });
+  } catch (error) {
+    console.error("Release Payment Error:", error);
+    res
+      .status(500)
+      .json({ message: "Internal server error during payment release" });
+  }
+};
+
+module.exports = { initializeEscrow, releasePayment };
