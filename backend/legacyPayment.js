@@ -1,24 +1,22 @@
+const crypto = require("crypto");
 const pool = require("../db");
 
-/**
- * Initializes an escrow payment session for a job via Interswitch.
- * Creates a pending payment record and returns the parameters required
- * by the Interswitch payment widget on the frontend.
- *
- * Amounts are stored in Naira but sent to Interswitch in kobo (x100),
- * as required by their API specification.
- *
- * @route POST /api/payments/escrow
- * @access Private (CLIENT)
- */
+// POST /api/payments/escrow
 const initializeEscrow = async (req, res) => {
   try {
     const { jobId, amount } = req.body;
 
     const txnRef = `GIG-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // Interswitch requires amounts in kobo (1 Naira = 100 kobo)
     const amountInKobo = amount * 100;
+
+    const MAC_KEY = process.env.INTERSWITCH_MAC_KEY;
+    const redirectUrl = "http://localhost:5000/payment-callback"; // Where Interswitch sends the user after paying
+    const productId = process.env.INTERSWITCH_PRODUCT_ID;
+
+    const stringToHash = `${txnRef}${productId}1${amountInKobo}${redirectUrl}${MAC_KEY}`;
+
+    const hash = crypto.createHash("sha512").update(stringToHash).digest("hex");
 
     await pool.query(
       `INSERT INTO payments (job_id, amount, status, interswitch_ref) 
@@ -29,36 +27,23 @@ const initializeEscrow = async (req, res) => {
     res.status(200).json({
       message: "Escrow initialized",
       paymentData: {
-        merchant_code: process.env.ISW_MERCHANT_CODE || "MX007",
-        pay_item_id: process.env.ISW_PAY_ITEM_ID || "101007",
-        txn_ref: txnRef,
+        txnRef,
         amount: amountInKobo,
-        currency: "566", // ISO 4217 numeric code for Nigerian Naira
-        site_redirect_url: "http://localhost:5500/payment-callback",
-        mode: "TEST",
-        tokenise_card: "true",
+        hash,
+        productId,
+        redirectUrl,
       },
     });
   } catch (error) {
-    console.error("Escrow initialization error:", error);
+    console.error("Escrow Error:", error);
     res.status(500).json({ message: "Failed to initialize payment" });
   }
 };
 
-/**
- * Releases escrowed funds to the worker once all conditions are satisfied.
- * Requires the job to be COMPLETED and both parties to have checked in.
- *
- * In production, this is where the Interswitch Transfer API call would be made
- * to move the funds from escrow to the worker's account.
- *
- * @route POST /api/payments/:id/release
- * @access Private (CLIENT)
- */
 const releasePayment = async (req, res) => {
   try {
     const jobId = req.params.id;
-
+    // 1. Verify the job is completed AND both parties checked in
     const [jobs] = await pool.query(
       "SELECT job_status, client_checkin, worker_checkin FROM jobs WHERE id = ?",
       [jobId],
@@ -80,7 +65,7 @@ const releasePayment = async (req, res) => {
           "Cannot release funds. Both client and worker must complete GPS check-in.",
       });
     }
-
+    // Check if the funds are currently in escrow
     const [payments] = await pool.query(
       "SELECT id, amount, status FROM payments WHERE job_id = ?",
       [jobId],
@@ -92,6 +77,7 @@ const releasePayment = async (req, res) => {
         .json({ message: "No funds held in escrow for this job." });
     }
 
+    // Update the payment status to RELEASED
     await pool.query(
       "UPDATE payments SET status = 'RELEASED' WHERE job_id = ?",
       [jobId],
@@ -102,26 +88,18 @@ const releasePayment = async (req, res) => {
       amount_released: payments[0].amount,
     });
   } catch (error) {
-    console.error("Release payment error:", error);
+    console.error("Release Payment Error:", error);
     res
       .status(500)
       .json({ message: "Internal server error during payment release" });
   }
 };
 
-/**
- * Refunds escrowed funds to the client when a job is cancelled or disputed.
- * Only applies to jobs in CANCELLED or DISPUTED status with funds still in escrow.
- *
- * In production, this is where the Interswitch Refund API call would be made.
- *
- * @route POST /api/payments/:id/refund
- * @access Private (CLIENT)
- */
 const refundPayment = async (req, res) => {
   try {
-    const jobId = req.params.id;
+    const jobId = req.params.jobId;
 
+    //  Verify the job is in a refundable state
     const [jobs] = await pool.query(
       "SELECT job_status FROM jobs WHERE id = ?",
       [jobId],
@@ -138,6 +116,7 @@ const refundPayment = async (req, res) => {
       });
     }
 
+    // Check if the funds are still in escrow
     const [payments] = await pool.query(
       "SELECT id, amount, status FROM payments WHERE job_id = ?",
       [jobId],
@@ -147,6 +126,7 @@ const refundPayment = async (req, res) => {
       return res.status(400).json({ message: "No funds available to refund." });
     }
 
+    // Update the payment status to REFUNDED
     await pool.query(
       "UPDATE payments SET status = 'REFUNDED' WHERE job_id = ?",
       [jobId],
@@ -157,7 +137,7 @@ const refundPayment = async (req, res) => {
       amount_refunded: payments[0].amount,
     });
   } catch (error) {
-    console.error("Refund payment error:", error);
+    console.error("Refund Payment Error:", error);
     res.status(500).json({ message: "Internal server error during refund" });
   }
 };
